@@ -186,6 +186,7 @@ docker run --rm --gpus all `
 
 * セグメント ASR が失敗した場合も、その区間は空文字のまま結果に残し、スキップしない（後段の突合・補正で扱いやすいようにする）
 * 話者分離後に GPU メモリ解放を行い、ASR 実行前の VRAM 圧迫を抑えている
+* `matplotlib` は Qwen3-ASR では不要だが、**pyannote の内部依存**（例: `pyannote.audio.tasks.segmentation.mixins`）として必要である。`requirements.txt` から削除しないこと。依存削減の際も、pyannote の import 実行確認なしに削除しないこと。
 * 一部環境でのモデルロード問題に備え、`torch.load(..., weights_only=False)` の互換パッチを含む
 * 音声や文字起こしは個人情報・機密情報を含みやすいため、リポジトリ外で管理することを推奨する
 * 固有名詞の補正や文脈補正は、後段の Zoom VTT 突合や LLM 修正（例: TranscriptMerger）に委ねる想定である

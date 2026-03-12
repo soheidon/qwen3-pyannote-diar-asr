@@ -1,6 +1,8 @@
 huggingface_hub
 transformers>=4.56.0
 pyannote-audio==3.3.2
+# pyannote の内部依存（tasks.segmentation.mixins 等で import される）。削除しないこと。
+matplotlib
 pydub
 tqdm
 qwen-asr
