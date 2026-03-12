@@ -152,12 +152,16 @@ docker run --rm --gpus all `
 
 ### 基本
 
-* `HF_TOKEN`: Hugging Face トークン
-* `INPUT_FILENAME`: 入力音声ファイル名
-* `NUM_SPEAKERS`: 話者数（例: `2`、空または `auto` で自動推定）
+* `HF_TOKEN`: Hugging Face トークン（**初回実行時は必須**。未設定時は起動時にエラー終了）
+* `INPUT_FILENAME`: 入力音声ファイル名（既定: `input.m4a`）
+* `NUM_SPEAKERS`: 話者数（数値または `auto`。空・`none`・`null`・`auto` で自動推定）
 * `MODEL_DIAR`: 話者分離モデル（既定: `pyannote/speaker-diarization-3.1`）
+
+### ASR 関連
+
 * `MODEL_ASR`: ASR モデル（既定: `Qwen/Qwen3-ASR-1.7B`）
 * `ASR_LANGUAGE`: ASR 言語（既定: `Japanese`）
+* `ASR_MAX_NEW_TOKENS`: セグメントあたりの最大生成トークン数（既定: `256`）。長いセグメントで切れる場合は増やす。
 
 ### パス関連
 
@@ -165,7 +169,6 @@ docker run --rm --gpus all `
 * `WORK_OUTPUT`: 出力ディレクトリ（既定: `/work/output`）
 * `WORK_HF_CACHE`: Hugging Face キャッシュ（既定: `/work/hf_cache`）
 * `WORK_TMP`: 一時ファイル保存先（既定: `/work/tmp`）
-* `ASR_MAX_NEW_TOKENS`: セグメントあたりの最大生成トークン数（既定: `256`）。長いセグメントで切れる場合は増やす。
 
 ### デバッグ用
 

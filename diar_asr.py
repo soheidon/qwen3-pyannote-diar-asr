@@ -68,12 +68,14 @@ def _release_gpu_memory(device: int, log_fn) -> None:
 # ================================
 import torch
 
+# pyannote 未ロード時でも TorchVersion を safe globals に登録する（torch.load 互換のため）
 try:
     from torch.serialization import add_safe_globals
     add_safe_globals([torch.torch_version.TorchVersion])
 except Exception:
     pass
 
+# pyannote ロード時に必要になるクラスを safe globals に登録する
 try:
     from torch.serialization import add_safe_globals
     from pyannote.audio.core.task import Specifications, Problem
@@ -142,7 +144,16 @@ def main() -> None:
     input_file = work_source / input_filename
 
     num_speakers_env = os.getenv("NUM_SPEAKERS", "").strip()
-    num_speakers = None if num_speakers_env in ("", "none", "null", "auto") else int(num_speakers_env)
+    if num_speakers_env in ("", "none", "null", "auto"):
+        num_speakers = None
+    else:
+        try:
+            num_speakers = int(num_speakers_env)
+        except ValueError:
+            raise ValueError(
+                f"NUM_SPEAKERS には数値または auto を指定してください。"
+                f"現在の値: '{num_speakers_env}'"
+            )
 
     model_diar = os.getenv("MODEL_DIAR", "pyannote/speaker-diarization-3.1")
     model_asr = os.getenv("MODEL_ASR", "Qwen/Qwen3-ASR-1.7B")
@@ -194,6 +205,7 @@ def main() -> None:
     dia = None
     log("[STEP] 話者分離モデルをロード...")
     try:
+        # TODO: 将来的に pyannote が token= を標準化したら use_auth_token から移行する
         dia = Pipeline.from_pretrained(model_diar, use_auth_token=hf_token)
         if dia is None:
             raise RuntimeError("Pipelineのロードに失敗しました。モデル名やHF_TOKENの権限を確認してください。")
@@ -270,6 +282,7 @@ def main() -> None:
             seg_path = Path(tmp_seg_dir) / f"seg_{idx:04d}.wav"
             seg.export(str(seg_path), format="wav")
 
+            # ASR 失敗時は空文字のまま結果に含める（セグメントはスキップしない。後段の突合・補正で扱いやすい）
             try:
                 out_list = asr_model.transcribe(
                     audio=str(seg_path),
@@ -284,6 +297,9 @@ def main() -> None:
     except Exception:
         log(f"[FATAL ERROR] ASR推論中に例外発生:\n{traceback.format_exc()}")
         raise
+
+    # ASR 完了後も GPU メモリを解放しておく（一貫性・将来の追加処理や切り分けのため）
+    _release_gpu_memory(device, log)
 
     # ================================
     # Write outputs
