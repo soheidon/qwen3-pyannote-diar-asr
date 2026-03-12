@@ -35,24 +35,34 @@ docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi
 
 ## 推奨ディレクトリ構成
 
-モデルキャッシュや一時 WAV により I/O が増えるため、保存先によって体感速度が変わる。
+モデルキャッシュや一時 WAV により I/O が増えるため、保存先によって体感速度が変わる。  
+**入力・出力・キャッシュ・一時を分けたほうが後で見やすい。**
 
 * **SSD 強推奨**: Hugging Face キャッシュ（`hf_cache`）、一時ファイル（`tmp`）
 * **HDD でも可**: 入力音声、出力テキスト
 
-例:
+### おすすめの形（D ドライブ・qwen3 用）
 
-* 入力/出力: `D:\asr\work\source`
-* HF キャッシュ: `D:\asr\hf_cache`
-* 一時ファイル: `D:\asr\tmp`
+ホスト側は次のようにまとめる。
+
+```text
+D:\asr\work\source\qwen3\
+  ├─ source    … 入力音声を置く
+  ├─ output    … 出力 VTT / TXT
+  ├─ hf_cache  … Hugging Face キャッシュ
+  └─ tmp       … 一時ファイル
+```
+
+フォルダ作成（PowerShell）:
 
 ```powershell
-$base = "D:\asr"
-New-Item -ItemType Directory -Force -Path "$base\work\source" | Out-Null
-New-Item -ItemType Directory -Force -Path "$base\work\output" | Out-Null
-New-Item -ItemType Directory -Force -Path "$base\hf_cache" | Out-Null
-New-Item -ItemType Directory -Force -Path "$base\tmp" | Out-Null
+mkdir D:\asr\work\source\qwen3\source
+mkdir D:\asr\work\source\qwen3\output
+mkdir D:\asr\work\source\qwen3\hf_cache
+mkdir D:\asr\work\source\qwen3\tmp
 ```
+
+入力音声は例として `D:\asr\work\source\qwen3\source\input.m4a` に置く。
 
 ---
 
@@ -60,12 +70,21 @@ New-Item -ItemType Directory -Force -Path "$base\tmp" | Out-Null
 
 `pyannote/speaker-diarization-3.1` は Hugging Face 上で利用規約への同意が必要なことが多い。事前にブラウザでログインし、モデルページで利用規約に同意しておくこと。
 
+**HF_TOKEN は毎回 `docker run` に直書きするより、Windows のユーザー環境変数に入れておくほうが安全で楽。**
+
+### 初回のみ：トークンを環境変数に設定
+
 ```powershell
-$token = "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-[Environment]::SetEnvironmentVariable("HF_TOKEN", $token, "User")
-# 新しい PowerShell を開き直して確認
-$env:HF_TOKEN
+[System.Environment]::SetEnvironmentVariable("HF_TOKEN", "hf_あなたの実際のトークン", "User")
 ```
+
+設定後、**PowerShell を開き直して**確認する。
+
+```powershell
+echo $env:HF_TOKEN
+```
+
+トークンが表示されれば OK。実行時は `-e HF_TOKEN=$env:HF_TOKEN` でコンテナに渡す。
 
 ---
 
@@ -80,27 +99,51 @@ docker build -t qwen3-diar-asr:cu126 .
 
 ## 実行
 
-入力音声（例: `meeting_sample.m4a`）を `D:\asr\work\source\` に置く。
+### Windows / D ドライブ前提の実行例（そのまま貼って使える）
+
+入力音声を `D:\asr\work\source\qwen3\source\input.m4a` に置いた場合の例。  
+HF_TOKEN は上記のとおり環境変数に入れておき、`$env:HF_TOKEN` で渡す。
 
 ```powershell
 docker run --rm --gpus all `
-  -e HF_TOKEN="$env:HF_TOKEN" `
-  -e INPUT_FILENAME="meeting_sample.m4a" `
-  -e NUM_SPEAKERS="2" `
+  -e HF_TOKEN=$env:HF_TOKEN `
+  -e INPUT_FILENAME=input.m4a `
+  -e MODEL_ASR=Qwen/Qwen3-ASR-1.7B `
+  -e ASR_LANGUAGE=Japanese `
+  -v D:\asr\work\source\qwen3\source:/work/source `
+  -v D:\asr\work\source\qwen3\output:/work/output `
+  -v D:\asr\work\source\qwen3\hf_cache:/work/hf_cache `
+  -v D:\asr\work\source\qwen3\tmp:/work/tmp `
+  qwen3-diar-asr:cu126
+```
+
+出力例:
+
+* `D:\asr\work\source\qwen3\output\input.txt`
+* `D:\asr\work\source\qwen3\output\input.vtt`
+
+話者数を固定する場合は `-e NUM_SPEAKERS=2` を追加する。
+
+### 注意
+
+Docker Desktop で **D ドライブの共有が有効か**確認すること。未共有だと volume mount でエラーになる。  
+（設定 → Resources → File sharing で対象ドライブを追加）
+
+### 汎用の実行例
+
+`WORK_OUTPUT` を省略した場合は、既定で `WORK_SOURCE/output` を使う。
+
+```powershell
+docker run --rm --gpus all `
+  -e HF_TOKEN=$env:HF_TOKEN `
+  -e INPUT_FILENAME=meeting_sample.m4a `
+  -e NUM_SPEAKERS=2 `
   -v D:\asr\work\source:/work/source `
   -v D:\asr\work\output:/work/output `
   -v D:\asr\hf_cache:/work/hf_cache `
   -v D:\asr\tmp:/work/tmp `
-  -e WORK_OUTPUT="/work/output" `
   qwen3-diar-asr:cu126
 ```
-
-`WORK_OUTPUT` を省略した場合は、既定で `WORK_SOURCE/output` を使う。
-
-出力例:
-
-* `D:\asr\work\output\meeting_sample.txt`
-* `D:\asr\work\output\meeting_sample.vtt`
 
 ---
 
