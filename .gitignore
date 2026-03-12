@@ -29,3 +29,6 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+# Cursor implementation note (GitHub に上げない)
+CURSOR_IMPLEMENTATION_NOTE.md
