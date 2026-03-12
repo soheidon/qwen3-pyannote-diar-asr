@@ -177,11 +177,11 @@ Whisper 版由来の fallback 機構には依存しない。
 ## 8. 環境変数
 
 ### 8.1 基本
-- `HF_TOKEN`: Hugging Face トークン。**初回実行時は必須。** 未設定時は起動時にエラー終了する。
+- `HF_TOKEN`: Hugging Face トークン。**現行実装では必須。** 未設定時は起動時にエラー終了する。
 - `INPUT_FILENAME`
 - `NUM_SPEAKERS`
 - `MODEL_DIAR`
-- `MODEL_ASR`
+- `MODEL_ASR`（ASR の追加設定は §8.3 を参照）
 
 ### 8.2 パス関連
 - `WORK_SOURCE`
@@ -189,7 +189,7 @@ Whisper 版由来の fallback 機構には依存しない。
 - `WORK_HF_CACHE`
 - `WORK_TMP`
 
-### 8.3 ASR 関連
+### 8.3 ASR 関連（§8.1 の MODEL_ASR と併用する設定）
 - `ASR_LANGUAGE`: 言語指定（既定: `Japanese`）
 - `ASR_MAX_NEW_TOKENS`: セグメントあたりの最大生成トークン数（既定: `256`）
 

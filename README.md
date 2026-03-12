@@ -70,7 +70,7 @@ mkdir D:\asr\work\source\qwen3\tmp
 
 `pyannote/speaker-diarization-3.1` は Hugging Face 上で利用規約への同意が必要なことが多い。事前にブラウザでログインし、モデルページで利用規約に同意しておくこと。
 
-**HF_TOKEN は初回実行時に実質必須です。** 未設定の場合は起動時にエラー終了します。  
+**HF_TOKEN は現行実装では必須です。** 未設定の場合は起動時にエラー終了します。  
 毎回 `docker run` に直書きするより、Windows のユーザー環境変数に入れておくほうが安全で楽。
 
 ### 初回のみ：トークンを環境変数に設定
@@ -152,14 +152,14 @@ docker run --rm --gpus all `
 
 ### 基本
 
-* `HF_TOKEN`: Hugging Face トークン（**初回実行時は必須**。未設定時は起動時にエラー終了）
+* `HF_TOKEN`: Hugging Face トークン（**現行実装では必須**。未設定時は起動時にエラー終了）
 * `INPUT_FILENAME`: 入力音声ファイル名（既定: `input.m4a`）
-* `NUM_SPEAKERS`: 話者数（数値または `auto`。空・`none`・`null`・`auto` で自動推定）
+* `NUM_SPEAKERS`: 話者数（数値または `auto`。空・空白のみ・`none`・`null`・`auto` で自動推定）
 * `MODEL_DIAR`: 話者分離モデル（既定: `pyannote/speaker-diarization-3.1`）
+* `MODEL_ASR`: ASR モデル（既定: `Qwen/Qwen3-ASR-1.7B`）
 
 ### ASR 関連
 
-* `MODEL_ASR`: ASR モデル（既定: `Qwen/Qwen3-ASR-1.7B`）
 * `ASR_LANGUAGE`: ASR 言語（既定: `Japanese`）
 * `ASR_MAX_NEW_TOKENS`: セグメントあたりの最大生成トークン数（既定: `256`）。長いセグメントで切れる場合は増やす。
 
@@ -184,6 +184,7 @@ docker run --rm --gpus all `
 
 ## 補足
 
+* セグメント ASR が失敗した場合も、その区間は空文字のまま結果に残し、スキップしない（後段の突合・補正で扱いやすいようにする）
 * 話者分離後に GPU メモリ解放を行い、ASR 実行前の VRAM 圧迫を抑えている
 * 一部環境でのモデルロード問題に備え、`torch.load(..., weights_only=False)` の互換パッチを含む
 * 音声や文字起こしは個人情報・機密情報を含みやすいため、リポジトリ外で管理することを推奨する

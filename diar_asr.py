@@ -68,7 +68,8 @@ def _release_gpu_memory(device: int, log_fn) -> None:
 # ================================
 import torch
 
-# pyannote 未ロード時でも TorchVersion を safe globals に登録する（torch.load 互換のため）
+# torch.load 互換のため safe globals に登録（TODO: 将来的に見通しをよくするなら小関数にまとめる検討可）
+# pyannote 未ロード時でも TorchVersion を登録する
 try:
     from torch.serialization import add_safe_globals
     add_safe_globals([torch.torch_version.TorchVersion])
@@ -158,7 +159,13 @@ def main() -> None:
     model_diar = os.getenv("MODEL_DIAR", "pyannote/speaker-diarization-3.1")
     model_asr = os.getenv("MODEL_ASR", "Qwen/Qwen3-ASR-1.7B")
     asr_language = os.getenv("ASR_LANGUAGE", "Japanese")
-    asr_max_new_tokens = int(os.getenv("ASR_MAX_NEW_TOKENS", "256"))
+    asr_max_new_tokens_env = os.getenv("ASR_MAX_NEW_TOKENS", "256")
+    try:
+        asr_max_new_tokens = int(asr_max_new_tokens_env)
+    except ValueError:
+        raise ValueError(
+            f"ASR_MAX_NEW_TOKENS には数値を指定してください。現在の値: '{asr_max_new_tokens_env}'"
+        )
 
     device = 0 if torch.cuda.is_available() else -1
     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
