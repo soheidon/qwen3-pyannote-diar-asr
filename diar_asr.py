@@ -6,6 +6,7 @@
 
 import gc
 import os
+import sys
 import time
 import tempfile
 import shutil
@@ -19,30 +20,18 @@ warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
 warnings.filterwarnings("ignore", category=UserWarning)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-# ================================
-# Paths (Docker volume mount 前提)
-# ================================
-WORK_SOURCE = Path(os.getenv("WORK_SOURCE", "/work/source"))
-WORK_OUTPUT_ENV = os.getenv("WORK_OUTPUT", "").strip()
-WORK_OUTPUT = Path(WORK_OUTPUT_ENV) if WORK_OUTPUT_ENV else (WORK_SOURCE / "output")
-WORK_HF = Path(os.getenv("WORK_HF_CACHE", "/work/hf_cache"))
-WORK_TMP = Path(os.getenv("WORK_TMP", "/work/tmp"))
-
-WORK_OUTPUT.mkdir(parents=True, exist_ok=True)
-WORK_HF.mkdir(parents=True, exist_ok=True)
-WORK_TMP.mkdir(parents=True, exist_ok=True)
-
-os.environ.setdefault("HF_HOME", str(WORK_HF))
-os.environ.setdefault("HF_HUB_CACHE", str(WORK_HF / "hub"))
-os.environ.setdefault("TRANSFORMERS_CACHE", str(WORK_HF / "transformers"))
-os.environ.setdefault("XDG_CACHE_HOME", str(WORK_HF))
-os.environ.setdefault("TMPDIR", str(WORK_TMP))
-os.environ.setdefault("TEMP", str(WORK_TMP))
-os.environ.setdefault("TMP", str(WORK_TMP))
-
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def fmt_vtt(t: float) -> str:
+    """秒数から VTT 形式のタイムスタンプを生成する。24時間超でも正しく計算する。"""
+    total_ms = int(round(float(t) * 1000))
+    total_seconds, ms = divmod(total_ms, 1000)
+    h, rem = divmod(total_seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
 # ================================
@@ -75,6 +64,7 @@ def _release_gpu_memory(device: int, log_fn) -> None:
 
 # ================================
 # Torch import + PyTorch 2.6+ workaround (pyannote 用)
+# TORCH_LOAD_WEIGHTS_ONLY=0 のとき weights_only=False でパッチし、互換性を確保する。
 # ================================
 import torch
 
@@ -95,6 +85,7 @@ _force_legacy = os.getenv("TORCH_LOAD_WEIGHTS_ONLY", "0").strip().lower() in ("0
 if _force_legacy:
     _orig_torch_load = torch.load
     def _torch_load_legacy(*args, **kwargs):
+        kwargs.pop("weights_only", None)
         kwargs["weights_only"] = False
         return _orig_torch_load(*args, **kwargs)
     torch.load = _torch_load_legacy
@@ -102,203 +93,222 @@ if _force_legacy:
 else:
     log("[INFO] torch.load patch disabled (TORCH_LOAD_WEIGHTS_ONLY!=0).")
 
-# ================================
-# HF login
-# ================================
-from huggingface_hub import login, HfApi
 
-hf_token = os.getenv("HF_TOKEN")
-if not hf_token:
-    log("[WARN] 環境変数 HF_TOKEN が未設定です。docker run に -e HF_TOKEN=... を付けてください。")
-else:
+def main() -> None:
+    # ================================
+    # Paths (Docker volume mount 前提)
+    # ================================
+    work_source = Path(os.getenv("WORK_SOURCE", "/work/source"))
+    work_output_env = os.getenv("WORK_OUTPUT", "").strip()
+    work_output = Path(work_output_env) if work_output_env else Path("/work/output")
+    work_hf = Path(os.getenv("WORK_HF_CACHE", "/work/hf_cache"))
+    work_tmp = Path(os.getenv("WORK_TMP", "/work/tmp"))
+
+    work_output.mkdir(parents=True, exist_ok=True)
+    work_hf.mkdir(parents=True, exist_ok=True)
+    work_tmp.mkdir(parents=True, exist_ok=True)
+
+    os.environ.setdefault("HF_HOME", str(work_hf))
+    os.environ.setdefault("HF_HUB_CACHE", str(work_hf / "hub"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(work_hf / "transformers"))
+    os.environ.setdefault("XDG_CACHE_HOME", str(work_hf))
+    os.environ.setdefault("TMPDIR", str(work_tmp))
+    os.environ.setdefault("TEMP", str(work_tmp))
+    os.environ.setdefault("TMP", str(work_tmp))
+
+    # ================================
+    # HF login（未設定時は明示的に終了）
+    # ================================
+    from huggingface_hub import login, HfApi
+
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        log("[FATAL] 環境変数 HF_TOKEN が未設定です。初回実行時は必須です。")
+        log("  docker run に -e HF_TOKEN=$env:HF_TOKEN を付けるか、Windows のユーザー環境変数に HF_TOKEN を設定してください。")
+        sys.exit(1)
     login(token=hf_token)
 
-try:
-    who = HfApi().whoami(token=hf_token or None)
-    who_str = who.get("name") or who.get("email") or who.get("username") or "Unknown"
-    log(f"[OK] HF login: {who_str}")
-except Exception:
-    log("[WARN] whoami 取得に失敗。すでに認証済みであれば問題ありません。")
+    try:
+        who = HfApi().whoami(token=hf_token)
+        who_str = who.get("name") or who.get("email") or who.get("username") or "Unknown"
+        log(f"[OK] HF login: {who_str}")
+    except Exception:
+        log("[WARN] whoami 取得に失敗。すでに認証済みであれば問題ありません。")
 
-# ================================
-# Settings
-# ================================
-INPUT_FILENAME = os.getenv("INPUT_FILENAME", "2026-02-11-utazu.m4a")
-INPUT_FILE = WORK_SOURCE / INPUT_FILENAME
+    # ================================
+    # Settings
+    # ================================
+    input_filename = os.getenv("INPUT_FILENAME", "input.m4a")
+    input_file = work_source / input_filename
 
-NUM_SPEAKERS_ENV = os.getenv("NUM_SPEAKERS", "").strip()
-NUM_SPEAKERS = None if NUM_SPEAKERS_ENV in ("", "none", "null", "auto") else int(NUM_SPEAKERS_ENV)
+    num_speakers_env = os.getenv("NUM_SPEAKERS", "").strip()
+    num_speakers = None if num_speakers_env in ("", "none", "null", "auto") else int(num_speakers_env)
 
-MODEL_DIAR = os.getenv("MODEL_DIAR", "pyannote/speaker-diarization-3.1")
-MODEL_ASR = os.getenv("MODEL_ASR", "Qwen/Qwen3-ASR-1.7B")
+    model_diar = os.getenv("MODEL_DIAR", "pyannote/speaker-diarization-3.1")
+    model_asr = os.getenv("MODEL_ASR", "Qwen/Qwen3-ASR-1.7B")
+    asr_language = os.getenv("ASR_LANGUAGE", "Japanese")
+    asr_max_new_tokens = int(os.getenv("ASR_MAX_NEW_TOKENS", "256"))
 
-# 日本語固定（辞書なし最小構成）
-ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "Japanese")
+    device = 0 if torch.cuda.is_available() else -1
+    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    log(f"[INFO] device={'cuda:0' if device == 0 else 'cpu'}, torch_dtype={torch_dtype}")
 
-device = 0 if torch.cuda.is_available() else -1
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-log(f"[INFO] device={'cuda:0' if device == 0 else 'cpu'}, torch_dtype={torch_dtype}")
+    log(f"[CFG] WORK_SOURCE={work_source}")
+    log(f"[CFG] WORK_OUTPUT={work_output}")
+    log(f"[CFG] INPUT_FILENAME='{input_filename}'")
+    log(f"[CFG] NUM_SPEAKERS_ENV='{num_speakers_env}' -> NUM_SPEAKERS={num_speakers}")
+    log(f"[CFG] MODEL_DIAR={model_diar}")
+    log(f"[CFG] MODEL_ASR={model_asr}")
+    log(f"[CFG] ASR_MAX_NEW_TOKENS={asr_max_new_tokens}")
 
-log(f"[CFG] WORK_SOURCE={WORK_SOURCE}")
-log(f"[CFG] WORK_OUTPUT={WORK_OUTPUT}")
-log(f"[CFG] INPUT_FILENAME='{INPUT_FILENAME}'")
-log(f"[CFG] NUM_SPEAKERS_ENV='{NUM_SPEAKERS_ENV}' -> NUM_SPEAKERS={NUM_SPEAKERS}")
-log(f"[CFG] MODEL_DIAR={MODEL_DIAR}")
-log(f"[CFG] MODEL_ASR={MODEL_ASR}")
+    if not input_file.exists():
+        raise FileNotFoundError(f"入力が見つかりません: {input_file}")
 
-if not INPUT_FILE.exists():
-    raise FileNotFoundError(f"入力が見つかりません: {INPUT_FILE}")
+    # ================================
+    # Imports
+    # ================================
+    from pyannote.audio import Pipeline
+    from pydub import AudioSegment
+    from tqdm.auto import tqdm
 
-# ================================
-# Imports
-# ================================
-from pyannote.audio import Pipeline
-from pydub import AudioSegment
-from tqdm.auto import tqdm
+    # ================================
+    # Convert to WAV (16k/mono)
+    # ================================
+    log("[STEP] 入力を WAV(16kHz mono) に変換...")
+    tmp_in_dir = tempfile.mkdtemp(prefix="wav_", dir=str(work_tmp))
+    wav16 = Path(tmp_in_dir) / "input_16k_mono.wav"
 
-# ================================
-# Convert to WAV (16k/mono)
-# ================================
-log("[STEP] 入力を WAV(16kHz mono) に変換...")
-tmp_in_dir = tempfile.mkdtemp(prefix="wav_", dir=str(WORK_TMP))
-wav16 = Path(tmp_in_dir) / "input_16k_mono.wav"
+    cmd = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-y",
+        "-i", str(input_file),
+        "-ac", "1", "-ar", "16000",
+        str(wav16),
+    ]
+    subprocess.run(cmd, check=True)
+    audio16 = AudioSegment.from_file(str(wav16))
+    log("[OK] 変換完了")
 
-cmd = [
-    "ffmpeg", "-nostdin", "-hide_banner", "-y",
-    "-i", str(INPUT_FILE),
-    "-ac", "1", "-ar", "16000",
-    str(wav16),
-]
-subprocess.run(cmd, check=True)
-audio16 = AudioSegment.from_file(str(wav16))
-log("[OK] 変換完了")
+    # ================================
+    # Diarization
+    # ================================
+    dia = None
+    log("[STEP] 話者分離モデルをロード...")
+    try:
+        dia = Pipeline.from_pretrained(model_diar, use_auth_token=hf_token)
+        if dia is None:
+            raise RuntimeError("Pipelineのロードに失敗しました。モデル名やHF_TOKENの権限を確認してください。")
+        if device == 0:
+            dia.to(torch.device("cuda"))
+        if hasattr(dia, "embedding_batch_size"):
+            dia.embedding_batch_size = 1
+    except Exception:
+        log(f"[FATAL ERROR] モデルロード中に例外発生:\n{traceback.format_exc()}")
+        raise
 
-# ================================
-# Diarization
-# ================================
-dia = None
-log("[STEP] 話者分離モデルをロード...")
-try:
-    dia = Pipeline.from_pretrained(MODEL_DIAR, use_auth_token=hf_token)
-    if dia is None:
-        raise RuntimeError("Pipelineのロードに失敗しました。モデル名やHF_TOKENの権限を確認してください。")
-    if device == 0:
-        dia.to(torch.device("cuda"))
-    if hasattr(dia, "embedding_batch_size"):
-        dia.embedding_batch_size = 1
-except Exception:
-    log(f"[FATAL ERROR] モデルロード中に例外発生:\n{traceback.format_exc()}")
-    raise
+    log("[STEP] 話者分離を実行...")
+    t0 = time.time()
+    try:
+        if device == 0:
+            log(f"[VRAM] Allocated before DIAR: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+        if num_speakers is None:
+            diar = dia(str(wav16))
+        else:
+            diar = dia(
+                str(wav16),
+                num_speakers=int(num_speakers),
+                min_speakers=int(num_speakers),
+                max_speakers=int(num_speakers),
+            )
+        segments = list(diar.itertracks(yield_label=True))
+        log(f"[OK] 話者分離: {len(segments)} セグメント ({time.time()-t0:.2f}s)")
+        labels = sorted({lbl for _, _, lbl in segments})
+        log(f"[DIAR] labels={labels} N={len(labels)}")
+    except Exception:
+        log(f"[FATAL ERROR] 話者分離の実行中に例外発生:\n{traceback.format_exc()}")
+        if dia is not None:
+            dia = None
+        _release_gpu_memory(device, log)
+        raise
 
-log("[STEP] 話者分離を実行...")
-t0 = time.time()
-try:
-    if device == 0:
-        log(f"[VRAM] Allocated before DIAR: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-    if NUM_SPEAKERS is None:
-        diar = dia(str(wav16))
-    else:
-        diar = dia(
-            str(wav16),
-            num_speakers=int(NUM_SPEAKERS),
-            min_speakers=int(NUM_SPEAKERS),
-            max_speakers=int(NUM_SPEAKERS),
-        )
-    segments = list(diar.itertracks(yield_label=True))
-    log(f"[OK] 話者分離: {len(segments)} セグメント ({time.time()-t0:.2f}s)")
-    labels = sorted({lbl for _, _, lbl in segments})
-    log(f"[DIAR] labels={labels} N={len(labels)}")
-except Exception:
-    log(f"[FATAL ERROR] 話者分離の実行中に例外発生:\n{traceback.format_exc()}")
+    # 話者分離終了後、ASR 開始前に GPU メモリを解放
     if dia is not None:
         dia = None
     _release_gpu_memory(device, log)
-    raise
 
-# 話者分離終了後、ASR 開始前に GPU メモリを解放
-if dia is not None:
-    dia = None
-_release_gpu_memory(device, log)
+    # ================================
+    # Qwen3-ASR ロード（pyannote 解放後に GPU メモリを空けてから読み込む）
+    # ================================
+    log("[STEP] Qwen3-ASR をロード...")
+    try:
+        from qwen_asr import Qwen3ASRModel
 
-# ================================
-# Qwen3-ASR ロード
-# ================================
-log("[STEP] Qwen3-ASR をロード...")
-try:
-    from qwen_asr import Qwen3ASRModel
+        asr_model = Qwen3ASRModel.from_pretrained(
+            model_asr,
+            dtype=torch_dtype,
+            device_map="cuda:0" if device == 0 else "cpu",
+            max_inference_batch_size=1,
+            max_new_tokens=asr_max_new_tokens,
+        )
+    except Exception:
+        log(f"[FATAL ERROR] Qwen3-ASR ロード中に例外発生:\n{traceback.format_exc()}")
+        raise
 
-    asr_model = Qwen3ASRModel.from_pretrained(
-        MODEL_ASR,
-        dtype=torch_dtype,
-        device_map="cuda:0" if device == 0 else "cpu",
-        max_inference_batch_size=1,
-        max_new_tokens=256,
-    )
-except Exception:
-    log(f"[FATAL ERROR] Qwen3-ASR ロード中に例外発生:\n{traceback.format_exc()}")
-    raise
+    # ================================
+    # セグメント単位 ASR
+    # ================================
+    log("[STEP] セグメントごとにASR中...")
+    tmp_seg_dir = tempfile.mkdtemp(prefix="seg_", dir=str(work_tmp))
+    results = []
 
-# ================================
-# セグメント単位 ASR
-# ================================
-log("[STEP] セグメントごとにASR中...")
-tmp_seg_dir = tempfile.mkdtemp(prefix="seg_", dir=str(WORK_TMP))
-results = []
+    try:
+        for idx, (turn, _, spk) in enumerate(tqdm(segments, desc="ASR", leave=True), 1):
+            st, ed = float(turn.start), float(turn.end)
+            if ed <= st:
+                continue
 
-try:
-    for idx, (turn, _, spk) in enumerate(tqdm(segments, desc="ASR", leave=True), 1):
-        st, ed = float(turn.start), float(turn.end)
-        if ed <= st:
-            continue
+            seg = audio16[int(st * 1000) : int(ed * 1000)]
+            seg_path = Path(tmp_seg_dir) / f"seg_{idx:04d}.wav"
+            seg.export(str(seg_path), format="wav")
 
-        seg = audio16[int(st * 1000) : int(ed * 1000)]
-        seg_path = Path(tmp_seg_dir) / f"seg_{idx:04d}.wav"
-        seg.export(str(seg_path), format="wav")
+            try:
+                out_list = asr_model.transcribe(
+                    audio=str(seg_path),
+                    language=asr_language,
+                )
+                text = (out_list[0].text or "").strip() if out_list else ""
+            except Exception as e_asr:
+                log(f"[WARN] セグメント {idx} ASR 失敗: {e_asr}")
+                text = ""
 
-        try:
-            out_list = asr_model.transcribe(
-                audio=str(seg_path),
-                language=ASR_LANGUAGE,
-            )
-            text = (out_list[0].text or "").strip() if out_list else ""
-        except Exception as e_asr:
-            log(f"[WARN] セグメント {idx} ASR 失敗: {e_asr}")
-            text = ""
+            results.append({"speaker": spk, "start": st, "end": ed, "text": text})
+    except Exception:
+        log(f"[FATAL ERROR] ASR推論中に例外発生:\n{traceback.format_exc()}")
+        raise
 
-        results.append({"speaker": spk, "start": st, "end": ed, "text": text})
-except Exception:
-    log(f"[FATAL ERROR] ASR推論中に例外発生:\n{traceback.format_exc()}")
-    raise
+    # ================================
+    # Write outputs
+    # ================================
+    base = input_file.stem
+    vtt_lines = ["WEBVTT\n"]
+    for i, r in enumerate(results, 1):
+        vtt_lines.append(
+            f"{i}\n{fmt_vtt(r['start'])} --> {fmt_vtt(r['end'])}\n<v {r['speaker']}>{r['text']}</v>\n"
+        )
+    (work_output / f"{base}.vtt").write_text("\n".join(vtt_lines), encoding="utf-8")
 
-# ================================
-# Write outputs
-# ================================
-import datetime
+    with (work_output / f"{base}.txt").open("w", encoding="utf-8") as f:
+        for r in results:
+            f.write(f"[{r['speaker']}] {r['text']}\n")
 
-def fmt_vtt(t):
-    td = datetime.timedelta(seconds=float(t))
-    m, s = divmod(td.seconds, 60)
-    h, m = divmod(m, 60)
-    ms = td.microseconds // 1000
-    return f"{h:02}:{m:02}:{s:02}.{ms:03}"
+    # ================================
+    # Cleanup
+    # ================================
+    shutil.rmtree(tmp_seg_dir, ignore_errors=True)
+    shutil.rmtree(tmp_in_dir, ignore_errors=True)
 
-base = INPUT_FILE.stem
-vtt_lines = ["WEBVTT\n"]
-for i, r in enumerate(results, 1):
-    vtt_lines.append(
-        f"{i}\n{fmt_vtt(r['start'])} --> {fmt_vtt(r['end'])}\n<v {r['speaker']}>{r['text']}</v>\n"
-    )
-(WORK_OUTPUT / f"{base}.vtt").write_text("\n".join(vtt_lines), encoding="utf-8")
+    log(f"[OK] 出力: {work_output}")
+    log("[DONE] 完了")
 
-with (WORK_OUTPUT / f"{base}.txt").open("w", encoding="utf-8") as f:
-    for r in results:
-        f.write(f"[{r['speaker']}] {r['text']}\n")
 
-# ================================
-# Cleanup
-# ================================
-shutil.rmtree(tmp_seg_dir, ignore_errors=True)
-shutil.rmtree(tmp_in_dir, ignore_errors=True)
-
-log(f"[OK] 出力: {WORK_OUTPUT}")
-log("[DONE] 完了")
+if __name__ == "__main__":
+    main()
